@@ -101,6 +101,8 @@ def main():
         existing.append(item["text"])
         made += 1
     print(f"Done: {made} new shayari")
+             if made == 0:
+        raise SystemExit("Koi shayari nahi bani, upar ke errors dekho")
 
 
 if __name__ == "__main__":
