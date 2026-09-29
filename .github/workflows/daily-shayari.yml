@@ -3,7 +3,7 @@ name: Daily Shayari
 on:
   schedule:
     - cron: "30 3 * * *"   # roz subah 9:00 AM IST
-  workflow_dispatch:
+  workflow_dispatch:        # manual "Run workflow" button
 
 permissions:
   contents: write
@@ -25,7 +25,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python generate.py
 
-            - name: Commit and push
+      - name: Commit and push
         run: |
           mkdir -p content/shayari
           git config user.name "shayari-bot"
