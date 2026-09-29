@@ -5,7 +5,8 @@ import requests
 PER_RUN = 3                      # ek run mein kitni shayari
 LANGUAGE = "Hinglish (Roman script mein Hindi, jaise: 'tum yaad aaye')"
 # Hindi ke liye: "Hindi (Devanagari script)" | Urdu ke liye: "Urdu (Nastaliq script)"
-MODELS = [os.getenv("GEMINI_MODEL", "gemini-3.8-flash"), "gemini-flash-latest"]  # pehla fail ho to agla try hoga
+MODELS = [os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+          "openai/gpt-oss-20b", "llama-3.1-8b-instant"]   # pehla fail ho to agla try hoga
 SIMILARITY_LIMIT = 0.75          # isse zyada match ho to reject
 OUT_DIR = "content/shayari"
 # --------------------------------------------
@@ -15,9 +16,11 @@ MOODS = ["udaas", "romantic", "josh wala", "sukoon wala", "shikayat bhara"]
 KEYWORDS = ["chand", "baarish", "chai", "safar", "raat", "aaina", "khamoshi",
             "subah", "dil", "manzil", "hawa", "tanhai", "khwab", "diya"]
 
-API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 if not API_KEY:
-    raise SystemExit("GEMINI_API_KEY secret nahi mila. Settings > Secrets and variables > Actions mein add karo.")
+    raise SystemExit("GROQ_API_KEY secret nahi mila. Settings > Secrets and variables > Actions mein add karo.")
+
+URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 def normalize(t):
@@ -41,21 +44,25 @@ def is_duplicate(text, existing):
     return False
 
 
-def call_gemini(prompt):
+def call_llm(prompt):
     last_err = None
     for model in MODELS:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         r = requests.post(
-            url,
-            headers={"x-goog-api-key": API_KEY, "Content-Type": "application/json"},
+            URL,
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 1.0, "responseMimeType": "application/json"},
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "Tum ek shayar ho. Hamesha sirf valid JSON object return karo."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 1.0,
+                "response_format": {"type": "json_object"},
             },
             timeout=60,
         )
         if r.status_code == 200:
-            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            return r.json()["choices"][0]["message"]["content"]
         last_err = f"[{model}] HTTP {r.status_code}: {r.text[:300]}"
         print("API ERROR:", last_err)
     raise RuntimeError(last_err)
@@ -73,11 +80,13 @@ Ye pehle se ban chuki hain, inse milti-julti mat likhna:
 {avoid_txt}
 
 Sirf JSON do: {{"title": "chhota title", "text": "shayari (lines \\n se alag)"}}"""
-    raw = call_gemini(prompt)
+    raw = call_llm(prompt)
     raw = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.M).strip()
     data = json.loads(raw)
     if isinstance(data, list):
         data = data[0]
+    if not data.get("text") or not data.get("title"):
+        raise ValueError("title/text missing in response")
     return data
 
 
@@ -98,7 +107,7 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     existing = load_existing()
     made, attempts = 0, 0
-    while made < PER_RUN and attempts < PER_RUN * 4:
+    while made < PER_RUN and attempts < PER_RUN * 3:
         attempts += 1
         cat, mood, kw = random.choice(CATEGORIES), random.choice(MOODS), random.choice(KEYWORDS)
         try:
