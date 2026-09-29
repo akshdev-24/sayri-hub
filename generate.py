@@ -5,7 +5,8 @@ import requests
 PER_RUN = 3                      # ek run mein kitni shayari
 LANGUAGE = "Hinglish (Roman script mein Hindi, jaise: 'tum yaad aaye')"
 # Hindi ke liye: "Hindi (Devanagari script)" | Urdu ke liye: "Urdu (Nastaliq script)"
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODELS = [os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+          "gemini-2.0-flash", "gemini-flash-latest"]   # pehla fail ho to agla try hoga
 SIMILARITY_LIMIT = 0.75          # isse zyada match ho to reject
 OUT_DIR = "content/shayari"
 # --------------------------------------------
@@ -15,33 +16,50 @@ MOODS = ["udaas", "romantic", "josh wala", "sukoon wala", "shikayat bhara"]
 KEYWORDS = ["chand", "baarish", "chai", "safar", "raat", "aaina", "khamoshi",
             "subah", "dil", "manzil", "hawa", "tanhai", "khwab", "diya"]
 
-API_KEY = os.environ["GEMINI_API_KEY"]
-URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
+API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+if not API_KEY:
+    raise SystemExit("GEMINI_API_KEY secret nahi mila. Settings > Secrets and variables > Actions mein add karo.")
 
 
 def normalize(t):
-    return re.sub(r"[^\w\s]", "", t.lower()).split() and " ".join(re.sub(r"[^\w\s]", "", t.lower()).split())
+    return " ".join(re.sub(r"[^\w\s]", "", t.lower()).split())
 
 
 def load_existing():
     items = []
     for f in glob.glob(f"{OUT_DIR}/*.md"):
         raw = open(f, encoding="utf-8").read()
-        body = raw.split("---", 2)[-1].strip()
-        items.append(body)
+        items.append(raw.split("---", 2)[-1].strip())
     return items
 
 
 def is_duplicate(text, existing):
     n = normalize(text)
-    h = hashlib.md5(n.encode()).hexdigest()
     for e in existing:
         ne = normalize(e)
-        if hashlib.md5(ne.encode()).hexdigest() == h:
-            return True
-        if difflib.SequenceMatcher(None, n, ne).ratio() >= SIMILARITY_LIMIT:
+        if n == ne or difflib.SequenceMatcher(None, n, ne).ratio() >= SIMILARITY_LIMIT:
             return True
     return False
+
+
+def call_gemini(prompt):
+    last_err = None
+    for model in MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        r = requests.post(
+            url,
+            headers={"x-goog-api-key": API_KEY, "Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 1.0, "responseMimeType": "application/json"},
+            },
+            timeout=60,
+        )
+        if r.status_code == 200:
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        last_err = f"[{model}] HTTP {r.status_code}: {r.text[:300]}"
+        print("API ERROR:", last_err)
+    raise RuntimeError(last_err)
 
 
 def generate(category, mood, keyword, avoid):
@@ -56,23 +74,17 @@ Ye pehle se ban chuki hain, inse milti-julti mat likhna:
 {avoid_txt}
 
 Sirf JSON do: {{"title": "chhota title", "text": "shayari (lines \\n se alag)"}}"""
-    r = requests.post(
-        URL,
-        headers={"x-goog-api-key": API_KEY, "Content-Type": "application/json"},
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 1.0, "responseMimeType": "application/json"},
-        },
-        timeout=60,
-    )
-    r.raise_for_status()
-    raw = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(raw)
+    raw = call_gemini(prompt)
+    raw = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.M).strip()
+    data = json.loads(raw)
+    if isinstance(data, list):
+        data = data[0]
+    return data
 
 
 def save(item, category, mood, keyword):
     os.makedirs(OUT_DIR, exist_ok=True)
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc)
     h = hashlib.md5(item["text"].encode()).hexdigest()[:6]
     name = f"{now:%Y-%m-%d}-{h}.md"
     title = item["title"].replace('"', "'")
@@ -84,9 +96,10 @@ def save(item, category, mood, keyword):
 
 
 def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
     existing = load_existing()
     made, attempts = 0, 0
-    while made < PER_RUN and attempts < PER_RUN * 5:
+    while made < PER_RUN and attempts < PER_RUN * 4:
         attempts += 1
         cat, mood, kw = random.choice(CATEGORIES), random.choice(MOODS), random.choice(KEYWORDS)
         try:
@@ -101,8 +114,8 @@ def main():
         existing.append(item["text"])
         made += 1
     print(f"Done: {made} new shayari")
-             if made == 0:
-        raise SystemExit("Koi shayari nahi bani, upar ke errors dekho")
+    if made == 0:
+        raise SystemExit("Koi shayari nahi bani, upar ke API ERROR lines dekho")
 
 
 if __name__ == "__main__":
