@@ -5,8 +5,7 @@ import requests
 PER_RUN = 3                      # ek run mein kitni shayari
 LANGUAGE = "Hinglish (Roman script mein Hindi, jaise: 'tum yaad aaye')"
 # Hindi ke liye: "Hindi (Devanagari script)" | Urdu ke liye: "Urdu (Nastaliq script)"
-MODELS = [os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-          "gemini-2.0-flash", "gemini-flash-latest"]   # pehla fail ho to agla try hoga
+MODELS = [os.getenv("GEMINI_MODEL", "gemini-3.8-flash"), "gemini-flash-latest"]  # pehla fail ho to agla try hoga
 SIMILARITY_LIMIT = 0.75          # isse zyada match ho to reject
 OUT_DIR = "content/shayari"
 # --------------------------------------------
