@@ -5,10 +5,28 @@ import requests
 PER_RUN = 3                      # ek run mein kitni shayari
 LANGUAGE = "Hinglish (Roman script mein Hindi, jaise: 'tum yaad aaye')"
 # Hindi ke liye: "Hindi (Devanagari script)" | Urdu ke liye: "Urdu (Nastaliq script)"
-MODELS = [os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-          "openai/gpt-oss-20b", "llama-3.1-8b-instant"]   # pehla fail ho to agla try hoga
 SIMILARITY_LIMIT = 0.75          # isse zyada match ho to reject
 OUT_DIR = "content/shayari"
+
+# Providers order mein try honge. Jiski key secret mein hogi wahi use hoga.
+PROVIDERS = [
+    {
+        "name": "groq",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "key": os.environ.get("GROQ_API_KEY", "").strip(),
+        "models": [os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                   "openai/gpt-oss-20b", "llama-3.1-8b-instant"],
+        "json_mode": True,
+    },
+    {
+        "name": "openrouter",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "key": os.environ.get("OPENROUTER_API_KEY", "").strip(),
+        "models": [os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"),
+                   "openai/gpt-oss-120b:free", "openrouter/free"],
+        "json_mode": False,
+    },
+]
 # --------------------------------------------
 
 CATEGORIES = ["love", "dosti", "sad", "motivation", "zindagi", "intezaar", "yaadein"]
@@ -16,11 +34,10 @@ MOODS = ["udaas", "romantic", "josh wala", "sukoon wala", "shikayat bhara"]
 KEYWORDS = ["chand", "baarish", "chai", "safar", "raat", "aaina", "khamoshi",
             "subah", "dil", "manzil", "hawa", "tanhai", "khwab", "diya"]
 
-API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-if not API_KEY:
-    raise SystemExit("GROQ_API_KEY secret nahi mila. Settings > Secrets and variables > Actions mein add karo.")
-
-URL = "https://api.groq.com/openai/v1/chat/completions"
+ACTIVE = [p for p in PROVIDERS if p["key"]]
+if not ACTIVE:
+    raise SystemExit("Koi API key nahi mili. GitHub Secrets mein GROQ_API_KEY ya OPENROUTER_API_KEY add karo.")
+print("Active providers:", ", ".join(p["name"] for p in ACTIVE))
 
 
 def normalize(t):
@@ -44,27 +61,54 @@ def is_duplicate(text, existing):
     return False
 
 
+def extract_json(raw):
+    """Model kabhi-kabhi JSON ke aage-peeche extra text ya ``` laga deta hai."""
+    raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except Exception:
+        m = re.search(r"\{.*\}", raw, flags=re.S)
+        if not m:
+            raise ValueError("JSON nahi mila: " + raw[:100])
+        return json.loads(m.group(0))
+
+
 def call_llm(prompt):
     last_err = None
-    for model in MODELS:
-        r = requests.post(
-            URL,
-            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            json={
+    for p in ACTIVE:
+        for model in p["models"]:
+            body = {
                 "model": model,
                 "messages": [
                     {"role": "system", "content": "Tum ek shayar ho. Hamesha sirf valid JSON object return karo."},
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 1.0,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=60,
-        )
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"]
-        last_err = f"[{model}] HTTP {r.status_code}: {r.text[:300]}"
-        print("API ERROR:", last_err)
+            }
+            if p["json_mode"]:
+                body["response_format"] = {"type": "json_object"}
+            try:
+                r = requests.post(
+                    p["url"],
+                    headers={"Authorization": f"Bearer {p['key']}", "Content-Type": "application/json"},
+                    json=body,
+                    timeout=90,
+                )
+            except requests.RequestException as e:
+                last_err = f"[{p['name']}/{model}] network error: {e}"
+                print("API ERROR:", last_err)
+                continue
+            if r.status_code == 200:
+                try:
+                    content = r.json()["choices"][0]["message"]["content"]
+                except Exception:
+                    content = None
+                if content:
+                    return content
+                last_err = f"[{p['name']}/{model}] khali response: {r.text[:200]}"
+            else:
+                last_err = f"[{p['name']}/{model}] HTTP {r.status_code}: {r.text[:300]}"
+            print("API ERROR:", last_err)
     raise RuntimeError(last_err)
 
 
@@ -80,9 +124,7 @@ Ye pehle se ban chuki hain, inse milti-julti mat likhna:
 {avoid_txt}
 
 Sirf JSON do: {{"title": "chhota title", "text": "shayari (lines \\n se alag)"}}"""
-    raw = call_llm(prompt)
-    raw = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.M).strip()
-    data = json.loads(raw)
+    data = extract_json(call_llm(prompt))
     if isinstance(data, list):
         data = data[0]
     if not data.get("text") or not data.get("title"):
